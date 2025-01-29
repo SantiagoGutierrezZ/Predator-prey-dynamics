@@ -1,0 +1,938 @@
+rm(list=ls())
+# Loading functions and packages
+
+library(dplyr)
+library(data.table)
+library(activity)
+library(overlap)
+library(circular)
+
+library(stringr)
+library(caret)
+library(yardstick)
+library(ggplot2)
+library(overlap)
+library(suntools)
+library(suncalc)
+
+# Loading data
+setwd("C:/Users/santi/OneDrive - UNIVERSIDAD DE HUELVA/Escritorio/SANTIAGO GUTIERREZ/UNIVERSIDAD DE HUELVA - DOCTORADO/Papers/Activity patterns/q01_generaCSV_zooCNNexpert") # change the working directory
+
+lista <- list.files(pattern = ".csv", full.names = TRUE)
+
+
+# Leer los archivos CSV y asegurarse de que la columna date_time sea POSIXct
+listone <- lapply(lista, function(x) {
+  data <- fread(x, header = TRUE) %>%
+    mutate(site = as.character(site),
+           date_time = as.POSIXct(date_time, tz = "UTC"))
+  return(data)
+})
+
+
+# Merge the dataset
+dati<- bind_rows(listone)
+
+# Target classes
+class_target <- c("red fox", "european badger",
+                  "genet", "egyptian mongoose", "iberian lynx",
+                  "european rabbit", "iberian hare")
+
+carnivore_data_example <- dati %>%
+  filter(!(rev %in% c("rev01", "rev02", "rev03", "rev04", "rev24", "rev25", 
+                      "rev26", "rev27", "rev28", "rev29"))) %>%
+  filter(class.expert %in% class_target) %>%
+  select(site, cam, rev, date_time, class.expert)
+
+# Filtering carnivore detections by minimum time interval
+detections <- carnivore_data %>%
+  # Arrange the data by site and date_time in ascending order
+  arrange(site, date_time) %>%
+  # Group the data by site and class.expert (species)
+  group_by(site, class.expert) %>%
+  # Create a new column time_diff that calculates the time difference in minutes between consecutive detections within each group
+  mutate(time_diff = difftime(date_time,
+                              lag(date_time),
+                              units = "mins")) %>%
+  # Filter the rows to keep only the first detection in each group (which will have NA in time_diff) or detections that are more than 30 minutes apart
+  filter(is.na(time_diff) | time_diff > 30) %>%
+  # Select the necessary columns
+  select(site, cam, rev, date_time, class.expert)
+
+
+# Add scientific name
+carnivore_data <- detections %>%
+  mutate(sp = case_when(
+    class.expert == "red fox" ~ "Vulpes vulpes",
+    class.expert == "european badger" ~ "Meles meles",
+    class.expert == "genet" ~ "Genetta genetta",
+    class.expert == "egyptian mongoose" ~ "Herpestes ichneumon",
+    class.expert == "iberian lynx" ~ "Lynx pardinus",
+    class.expert == "european rabbit" ~ "Oryctolagus cuniculus",
+    class.expert == "iberian hare" ~ "Lepus granatensis"
+  ))
+
+# Create a new columns with the season and time of sunset and sunrise for each record
+
+# Coordinates of a site
+lat <- 36.96693
+lon <- -6.46713
+
+# Convertir date_time al formato correcto con zona horaria UTC
+carnivore_data$date_time <- as.POSIXct(carnivore_data$date_time, format = "%Y-%m-%d %H:%M:%S", tz = "UTC")
+
+# Crear el data.table sunlight_data
+sunlight_data <- data.table(
+  date = as.Date(carnivore_data$date_time),
+  lat = lat,
+  lon = lon
+)
+
+# Obtener los tiempos de amanecer y atardecer para cada registro
+carnivore_data_sun <- getSunlightTimes(data = sunlight_data, keep = c("sunrise", "sunset"))
+
+# Combinar los tiempos de amanecer y atardecer con el dataframe principal
+carnivore_data <- cbind(carnivore_data, carnivore_data_sun[, c("sunrise", "sunset")])
+
+# Convertir sunrise y sunset a POSIXct con zona horaria UTC
+carnivore_data$sunrise <- as.POSIXct(carnivore_data$sunrise, tz = "UTC")
+carnivore_data$sunset <- as.POSIXct(carnivore_data$sunset, tz = "UTC")
+
+
+# Get the season for each record, extract the time of de sunset and sunrise and clear 
+# the principal dataframe
+carnivore_data <- carnivore_data %>%
+  mutate(season = case_when((season = case_when(
+    # Winter
+    between(date_time, as.POSIXct("2020-12-12 00:00", tz = "UTC"), as.POSIXct("2021-03-20 23:59", tz = "UTC")) ~ "winter",
+    between(date_time, as.POSIXct("2021-12-22 00:00", tz = "UTC"), as.POSIXct("2022-03-20 23:59", tz = "UTC")) ~ "winter",
+    between(date_time, as.POSIXct("2022-12-22 00:00", tz = "UTC"), as.POSIXct("2023-03-20 23:59", tz = "UTC")) ~ "winter",
+    between(date_time, as.POSIXct("2023-12-22 00:00", tz = "UTC"), as.POSIXct("2023-03-20 23:59", tz = "UTC")) ~ "winter",
+    
+    # Spring
+    between(date_time, as.POSIXct("2021-03-21 00:00", tz = "UTC"), as.POSIXct("2021-06-21 23:59", tz = "UTC")) ~ "spring",
+    between(date_time, as.POSIXct("2022-03-21 00:00", tz = "UTC"), as.POSIXct("2022-06-21 23:59", tz = "UTC")) ~ "spring",
+    between(date_time, as.POSIXct("2023-03-21 00:00", tz = "UTC"), as.POSIXct("2023-06-21 23:59", tz = "UTC")) ~ "spring",
+    
+    # Summer
+    between(date_time, as.POSIXct("2021-06-22 00:00", tz = "UTC"), as.POSIXct("2021-09-22 23:59", tz = "UTC")) ~ "summer",
+    between(date_time, as.POSIXct("2022-06-22 00:00", tz = "UTC"), as.POSIXct("2022-09-23 23:59", tz = "UTC")) ~ "summer",
+    between(date_time, as.POSIXct("2023-06-22 00:00", tz = "UTC"), as.POSIXct("2023-09-23 23:59", tz = "UTC")) ~ "summer",
+    
+    # Autumn
+    between(date_time, as.POSIXct("2021-09-23 00:00", tz = "UTC"), as.POSIXct("2021-12-21 23:59", tz = "UTC")) ~ "autumn",
+    between(date_time, as.POSIXct("2022-09-24 00:00", tz = "UTC"), as.POSIXct("2022-12-21 23:59", tz = "UTC")) ~ "autumn",
+    between(date_time, as.POSIXct("2023-09-24 00:00", tz = "UTC"), as.POSIXct("2023-12-21 23:59", tz = "UTC")) ~ "autumn"
+  ))),
+  time_sunset = sapply(sunset, gettime, scale = "radian"),
+  time_sunrise = sapply(sunrise, gettime, scale = "radian")
+  ) %>%
+  select(!c("sunset", "sunrise")) %>%
+  filter(!is.na(date_time))
+
+# This study is developed over the course of two years (2021-2022). Thus, we have to
+# Avoid 
+
+solar_time <- solartime(carnivore_data$date_time, 
+                        lat = 36.96693,
+                        lon = -6.46713,
+                        tz = 1,
+                        format = "%Y-%m-%d %H:%M:%S")
+
+
+carnivore_data$solar <- solar_time$solar
+
+# Create all the subsets of data for the different species
+
+especies <- c("Vulpes vulpes", 
+              "Meles meles", 
+              "Genetta genetta", 
+              "Herpestes ichneumon",
+              "Lynx pardinus",
+              "Lepus granatensis",
+              "Oryctolagus cuniculus")
+
+# Extract the clock times for each species
+
+clock_time <- sapply(especies, 
+                     function(s) subset(carnivore_data,
+                                        sp == s)$clock)
+
+# Fit the circular kernel density to the clock times
+
+# fit_vulpes_c <- fitact(clock_time[["Vulpes vulpes"]], sample = "data")
+# fit_meles_c <- fitact(clock_time[["Meles meles"]], sample = "data")
+# fit_genetta_c <- fitact(clock_time[["Genetta genetta"]], sample = "data")
+# fit_herpestes_c <- fitact(clock_time[["Herpestes ichneumon"]], sample = "data")
+# fit_lynx_c <- fitact(clock_time[["Lynx pardinus"]], sample = "data")
+# fit_lepus_c <- fitact(clock_time[["Lepus granatensis"]], sample = "data")
+# fit_oryctolagus_c <- fitact(clock_time[["Oryctolagus cuniculus"]], sample = "data")
+# fit_canis_c <- fitact(clock_time[["Canis lupus"]], sample = "data")
+# 
+
+# Extract the average-anchored times for each species
+
+solar_time <- sapply(especies, 
+                     function(s) subset(carnivore_data,
+                                        sp == s)$solar)
+
+# Fit the circular kernel density to the average-anchored times
+
+fit_vulpes_s <- fitact(solar_time[["Vulpes vulpes"]], sample = "data")
+fit_meles_s <- fitact(solar_time[["Meles meles"]], sample = "data")
+fit_genetta_s <- fitact(solar_time[["Genetta genetta"]], sample = "data")
+fit_herpestes_s <- fitact(solar_time[["Herpestes ichneumon"]], sample = "data")
+fit_lynx_s <- fitact(solar_time[["Lynx pardinus"]], sample = "data")
+fit_lepus_s <- fitact(solar_time[["Lepus granatensis"]], sample = "data")
+fit_oryctolagus_s <- fitact(solar_time[["Oryctolagus cuniculus"]], sample = "data")
+#fit_canis_s <- fitact(solar_time[["Canis lupus"]], sample = "data")
+
+
+# Boxes
+max_sunrise <-max(carnivore_data$time_sunrise[carnivore_data$season =="summer" | 
+                                                carnivore_data$season =="autumn"])
+min_sunrise <-min(carnivore_data$time_sunrise[carnivore_data$season =="summer" | 
+                                                carnivore_data$season =="autumn"])
+max_sunset<-max(carnivore_data$time_sunset[carnivore_data$season =="summer" | 
+                                            carnivore_data$season =="autumn"])
+min_sunset<-min(carnivore_data$time_sunset[carnivore_data$season =="summer" | 
+                                             carnivore_data$season =="autumn"])
+
+# Defining the functions to draw the day and night boxes and the day and night 
+# x axis
+
+draw_day_polygons <- function() {
+  polygon(x = c(0,max_sunrise, max_sunrise,0), 
+          y = c(0,0,10,10), 
+          col = rgb(0.3, 0.3, 0.3, 0.3), 
+          border = NA)
+  polygon(x = c(0,min_sunrise, min_sunrise,0),
+          y = c(0,0,10,10),
+          col = rgb(0.3, 0.3, 0.3, 0.3), 
+          border = NA)
+  polygon(x = c(min_sunset, (2*pi),(2*pi), min_sunset),
+          y = c(0,0,10,10), 
+          col = rgb(0.3, 0.3, 0.3, 0.3),
+          border = NA)
+  polygon(x = c(max_sunset, (2*pi),(2*pi), 
+                max_sunset), 
+          y = c(0,0,10,10),
+          col = rgb(0.3, 0.3, 0.3, 0.3),
+          border=NA)
+  box()
+}
+
+draw_night_polygons <- function() {
+  polygon(x = c(0,max_sunrise, max_sunrise,0), 
+          y = c(0,0,10,10), 
+          col = rgb(0.3, 0.3, 0.3, 0.3), 
+          border = NA)
+  polygon(x = c(0,min_sunrise, min_sunrise,0),
+          y = c(0,0,10,10),
+          col = rgb(0.3, 0.3, 0.3, 0.3), 
+          border = NA)
+  polygon(x = c(min_sunset - 2 * pi, 0, 0, min_sunset - 2 * pi),
+          y = c(0,0,10,10), 
+          col = rgb(0.3, 0.3, 0.3, 0.3),
+          border = NA)
+  polygon(x = c(max_sunset - 2 * pi, 0, 0, max_sunset - 2 * pi), 
+          y = c(0,0,10,10),
+          col = rgb(0.3, 0.3, 0.3, 0.3),
+          border=NA)
+  box()
+}
+
+hours_in_radians_day <- c(0, 3, 6, 9, 12, 15, 18, 21, 24) * (pi / 12)
+draw_day_xaxis <- function () {
+  axis(1, at = hours_in_radians_day, 
+       labels =c("0", "3:00","6:00","9:00", "12:00", "15:00","18:00", "21:00","24:00"), 
+       tick = TRUE, 
+       las=1)
+}
+
+hours_in_radians_night <- c(-12, -9, -6, -3, 0, 3, 6, 9, 12) * (pi / 12)
+draw_night_xaxis <- function () {
+  axis(1, at = hours_in_radians_night,
+       labels = c("12:00", "15:00", "18:00", "21:00", "24:00", "3:00", "6:00", "9:00","12:00"),
+       tick = TRUE, las = 1)
+}
+
+# Defining the functions to draw the a activity pattern for each species
+
+col_meles <- "#00BFB2"
+draw_plot_meles <- function(centre = "",
+                            add = FALSE) {
+  plot(fit_meles_s, 
+       data = "none",  
+       xunit="radians", yunit="density",  
+       ylim=c(0,0.6), 
+       centre = centre, 
+       ylab = "", xlab = "", 
+       tline = list(col = col_meles, lwd = 3),
+       dline = list(col = "transparent"), 
+       cline = list(col = "transparent"),
+       xaxis=list(xaxt="n"),
+       add = add)
+}
+col_vulpes <- "#FF8C00"
+draw_plot_vulpes <- function(centre = "",
+                             add = FALSE) {
+    plot(fit_vulpes_s,
+       data = "none",
+       xunit="radians", yunit="density", 
+       ylim=c(0,0.6), 
+       centre = centre, 
+       ylab="", xlab="", 
+       tline = list(col = col_vulpes, lwd = 3), 
+       dline = list(col = "transparent"),
+       cline = list(col = "transparent"),
+       xaxis=list(xaxt="n"),
+       add = add)
+}
+col_genetta <- "#163070"
+draw_plot_genetta <- function(centre = "",
+                              add = FALSE) {
+    plot(fit_genetta_s, 
+       data = "none",
+       xunit="radians", yunit="density", 
+       ylim=c(0,0.6), 
+       centre = centre, 
+       ylab="", xlab="", 
+       tline = list(col = col_genetta, lwd = 3),
+       dline = list(col = "transparent"),
+       cline = list(col = "transparent"),
+       xaxis=list(xaxt="n"),
+       add = add)
+}
+col_herpestes <- "#DB0D44"
+draw_plot_herpestes <- function(centre = "",
+                                add = FALSE) {
+    plot(fit_herpestes_s, 
+       data = "none",
+       xunit="radians", yunit="density", 
+       ylim=c(0,0.6), 
+       centre = centre, 
+       ylab="", xlab="", 
+       tline = list(col = col_herpestes, lwd = 3),
+       dline = list(col = "transparent"),
+       cline = list(col = "transparent"),
+       xaxis=list(xaxt="n"),
+       add = add)
+}
+col_lynx <- "#7423D9"
+draw_plot_lynx <- function(centre = "",
+                           add = FALSE) {
+    plot(fit_lynx_s, 
+       data = "none",
+       xunit="radians", yunit="density", 
+       ylim=c(0,0.6), 
+       centre = centre, 
+       ylab="", xlab="", 
+       tline = list(col = col_lynx, lwd = 3),
+       dline = list(col = "transparent"),
+       cline = list(col = "transparent"),
+       xaxis=list(xaxt="n"),
+       add = add)
+}
+col_canis <- "#37DB04"
+draw_plot_canis <- function(centre = "",
+                            add = FALSE) {
+    plot(fit_canis_s, 
+       data = "none",
+       xunit="radians", yunit="density", 
+       ylim=c(0,0.6), 
+       centre = centre, 
+       ylab="", xlab="", 
+       tline = list(col = col_canis, lwd = 3),
+       dline = list(col = "transparent"),
+       cline = list(col = "transparent"),
+       xaxis=list(xaxt="n"),
+       add = add)
+}
+col_lepus <- "#4BEB74"
+draw_plot_lepus <- function(centre = "",
+                            add = FALSE) {
+    plot(fit_lepus_s, 
+       data = "none",
+       xunit="radians", yunit="density", 
+       ylim=c(0,0.8), 
+       centre = centre, 
+       ylab="", xlab="", 
+       tline = list(col = col_lepus, lwd = 3),
+       dline = list(col = "transparent"),
+       cline = list(col = "transparent"),
+       xaxis=list(xaxt="n"),
+       add = add)
+}
+col_oryctolagus <- "#EA1B00"
+draw_plot_oryctolagus <- function(centre = "",
+                                  add = FALSE) {
+    plot(fit_oryctolagus_s, 
+       data = "none",
+       xunit="radians", yunit="density", 
+       ylim=c(0,0.8), 
+       centre = centre, 
+       ylab="", xlab="", 
+       tline = list(col = col_oryctolagus, lwd = 3),
+       dline = list(col = "transparent"),
+       cline = list(col = "transparent"),
+       xaxis=list(xaxt="n"),
+       add = add)
+}
+
+
+############################################################
+##                                                        ##
+##   Temporal overlap between predator/predator pairs     ##
+##                                                        ##
+############################################################
+# Size of legend
+size_legend <- 2.2
+
+# Meles meles and Vulpes Vulpes
+png("plots_pairs/predator_predator8.png", width = 1900, height = 1700)
+par(family="serif", cex.lab = 2.2, cex.axis = 2.2)
+layout(matrix(1:10, ncol = 5, nrow = 2))
+draw_plot_meles(centre = "night",
+                add = FALSE)
+draw_plot_vulpes(centre = "night",
+                 add = TRUE)
+draw_night_xaxis()
+draw_night_polygons()
+legend("topleft", c("Badger", "Red fox"), col = c(col_meles, col_vulpes), 
+       box.col = "transparent", bg = "transparent", cex = size_legend, lty = 1)
+
+# Meles meles and Genetta genetta
+draw_plot_meles(centre = "night",
+                add = FALSE)
+draw_plot_genetta(centre = "night",
+                  add = TRUE)
+draw_night_xaxis()
+draw_night_polygons()
+legend("topleft", c("Badger", "Genet"), col = c(col_meles, col_genetta), lty = 1, 
+       box.col = "transparent", bg = "transparent", cex = size_legend)
+
+
+# Meles meles and Herpestes ichneumon
+draw_plot_meles(centre = "day",
+                add = FALSE)
+draw_plot_herpestes(centre = "day",
+                    add = TRUE)
+draw_day_xaxis()
+draw_day_polygons()
+legend("top", c("Badger", "Mongoose"), col = c(col_meles, col_herpestes), lty = 1, 
+       box.col = "transparent", bg = "transparent", cex = size_legend)
+
+
+# Vulpes vulpes and Genetta genetta 
+draw_plot_vulpes(centre = "night",
+                 add = FALSE)
+draw_plot_genetta(centre = "night",
+                  add = TRUE)
+draw_night_xaxis()
+draw_night_polygons()
+legend("topleft", c("Red fox", "Genet"), col = c(col_vulpes, col_genetta), lty = 1, 
+       box.col = "transparent", bg = "transparent", cex = size_legend)
+
+
+# Vulpes vulpes and Herpestes ichneumon
+draw_plot_vulpes(centre = "day",
+                 add = FALSE)
+draw_plot_herpestes(centre = "day",
+                    add = TRUE)
+draw_day_xaxis()
+draw_day_polygons()
+legend("top", c("Red fox", "Mongoose"), col = c(col_vulpes, col_herpestes), lty = 1, 
+       box.col = "transparent", bg = "transparent", cex = size_legend)
+
+
+# Herpestes ichneumon and Genetta genetta
+draw_plot_genetta(centre = "day",
+                  add = FALSE)
+draw_plot_herpestes(centre = "day",
+                    add = TRUE)
+draw_day_xaxis()
+draw_day_polygons()
+legend("top", c("Genet", "Mongoose"), col = c(col_genetta, col_herpestes), lty = 1, 
+       box.col = "transparent", bg = "transparent", cex = size_legend)
+
+
+# Lynx pardinus and Vulpes vulpes
+draw_plot_lynx(centre = "night",
+               add = FALSE)
+draw_plot_vulpes(centre = "night",
+                 add = TRUE)
+draw_night_xaxis()
+draw_night_polygons()
+legend("topleft", c("Lynx", "Red fox"), col = c(col_lynx, col_vulpes), 
+       lty = 1, box.col = "transparent", bg = "transparent", cex = size_legend)
+
+
+# Lynx pardinus and Meles meles
+draw_plot_lynx(centre = "night",
+               add = FALSE)
+draw_plot_meles(centre = "night",
+                add = TRUE)
+draw_night_xaxis()
+draw_night_polygons()
+legend("topleft", c("Lynx", "Badger"), col = c(col_lynx, col_meles), lty = 1, 
+       box.col = "transparent", bg = "transparent", cex = size_legend)
+
+
+# Lynx pardinus and Genetta genetta
+draw_plot_lynx(centre = "night",
+               add = FALSE)
+draw_plot_genetta(centre = "night",
+                  add = FALSE)
+draw_night_xaxis()
+draw_night_polygons()
+legend("topleft", c("Lynx", "Genet"), col = c(col_lynx, col_genetta), lty = 1, 
+       box.col = "transparent", bg = "transparent", cex = size_legend)
+
+
+# Lynx pardinus and Herpestes ichneumon
+draw_plot_lynx(centre = "day",
+               add = FALSE)
+draw_plot_herpestes(centre = "day",
+                    add = TRUE)
+draw_day_xaxis()
+draw_day_polygons()
+legend("top", c("Lynx", "Mongoose"), col = c(col_lynx, col_herpestes), lty = 1, 
+       box.col = "transparent", bg = "transparent", cex = size_legend)
+
+
+# # Canis lupus and Lynx pardinus
+# draw_plot_lynx(centre = "night",
+#                add = FALSE)
+# draw_plot_canis(centre = "night",
+#                 add = TRUE)
+# draw_night_xaxis()
+# draw_night_polygons()
+# legend("topleft", c("Lynx", "Dog"), col = c(col_lynx, col_canis), lty = 1, 
+#        box.col = "transparent", bg = "transparent", cex = size_legend)
+# 
+# 
+# # Canis lupus and Vulpes vulpes
+# draw_plot_canis(centre = "day",
+#                 add = FALSE)
+# draw_plot_vulpes(centre = "day",
+#                  add = TRUE)
+# draw_day_xaxis()
+# draw_day_polygons()
+# legend("top", c("Dog", "Red fox"), col = c(col_canis, col_vulpes), lty = 1, 
+#        box.col = "transparent", bg = "transparent", cex = size_legend)
+# 
+# 
+# # Canis lupus and Meles Meles
+# draw_plot_canis(centre = "day",
+#                 add = FALSE)
+# draw_plot_meles(centre = "day",
+#                 add = TRUE)
+# draw_day_xaxis()
+# draw_day_polygons()
+# legend("top", c("Dog", "Badger"), col = c(col_canis, col_meles), lty = 1, 
+#        box.col = "transparent", bg = "transparent", cex = size_legend)
+# 
+# 
+# # Canis lupus and Genetta genetta
+# draw_plot_canis(centre = "day",
+#                 add = FALSE)
+# draw_plot_genetta(centre = "day",
+#                   add = TRUE)
+# draw_day_xaxis()
+# draw_day_polygons()
+# legend("top", c("Dog", "Genet"), col = c(col_canis, col_genetta), lty = 1, 
+#        box.col = "transparent", bg = "transparent", cex = size_legend)
+# 
+# 
+# # Canis lupus and Herpestes ichneumon
+# draw_plot_canis(centre = "day",
+#                 add = FALSE)
+# draw_plot_herpestes(centre = "day",
+#                     add = TRUE)
+# draw_day_xaxis()
+# draw_day_polygons()
+# legend("top", c("Dog", "Mongoose"), col = c(col_canis, col_herpestes), lty = 1, 
+#        box.col = "transparent", bg = "transparent", cex = size_legend)
+
+layout(1)
+
+dev.off()
+############################################################
+##                                                        ##
+##   Temporal overlap between pray/pray pairs             ##
+##                                                        ##
+############################################################
+png("plots_prey_prey/lepus_oryctolagus.png", width = 600, height = 400)
+par(family="serif", cex.lab = 1.5, cex.axis = 1.6)
+draw_plot_lepus(centre = "night",
+                add = FALSE)
+draw_plot_oryctolagus(centre = "night",
+                      add = TRUE)
+draw_night_xaxis()
+draw_night_polygons()
+legend("topright", c("Hare", "Rabbit"), col = c(col_lepus, col_oryctolagus), lty = 1, 
+       box.col = "transparent", bg = "transparent", cex = 1.3)
+dev.off()
+
+rabbit <- subset(carnivore_data, 
+                sp == "Oryctolagus cuniculus")
+hare <- subset(carnivore_data, 
+               sp == "Lepus granatensis")
+
+
+############################################################
+##                                                        ##
+##   Temporal overlap between predator/prey pairs         ##
+##                                                        ##
+############################################################
+
+# Vulpes vulpes and Lepus granatensis
+png("plots_predator_prey/predator_prey.png", width = 1200, height = 1800)
+par(family="serif", cex.lab = 2.2, cex.axis = 2.2)
+layout(matrix(1:10, ncol = 2, nrow = 5))
+draw_plot_lepus(centre = "night",
+                add = FALSE)
+draw_plot_vulpes(centre = "night",
+                add = TRUE)
+draw_night_xaxis()
+
+# draw_night_polygons()
+legend("topright", c("Hare", "Red fox"), col = c(col_lepus, col_vulpes), lty = 1, 
+       box.col = "transparent", bg = "transparent", cex = 1.3)
+
+# Meles meles and Lepus granatensis
+draw_plot_lepus(centre = "night",
+                add = FALSE)
+draw_plot_meles(centre = "night",
+                add = TRUE)
+draw_night_xaxis()
+draw_night_polygons()
+legend("topright", c("Hare", "Badger"), col = c(col_lepus, col_meles), lty = 1, 
+       box.col = "transparent", bg = "transparent", cex = 1.3)
+
+# Genetta genetta and Lepus granatensis
+draw_plot_lepus(centre = "night",
+                add = FALSE)
+draw_plot_genetta(centre = "night",
+                  add = TRUE)
+draw_night_xaxis()
+draw_night_polygons()
+legend("topright", c("Hare", "Genet"), col = c(col_lepus, col_genetta), lty = 1, 
+       box.col = "transparent", bg = "transparent", cex = 1.3)
+
+# Lynx pardinus and Lepus granatensis
+draw_plot_lepus(centre = "night",
+                add = FALSE)
+draw_plot_lynx(centre = "night",
+               add = TRUE)
+draw_night_xaxis()
+draw_night_polygons()
+legend("topright", c("Hare", "Lynx"), col = c(col_lepus, col_lynx), lty = 1, 
+       box.col = "transparent", bg = "transparent", cex = 1.3)
+
+# Herpestes ichneumon and Lepus granatensis
+draw_plot_lepus(centre = "day",
+                add = FALSE)
+draw_plot_herpestes(centre = "day",
+                    add = TRUE)
+draw_day_xaxis()
+draw_day_polygons()
+legend("top", c("Hare", "Mongoose"), col = c(col_lepus, col_herpestes), lty = 1, 
+       box.col = "transparent", bg = "transparent", cex = 1.3)
+
+# Vulpes vulpes and Oryctolagus cuniculus
+draw_plot_oryctolagus(centre = "night",
+                add = FALSE)
+draw_plot_vulpes(centre = "night",
+                 add = TRUE)
+draw_night_xaxis()
+draw_night_polygons()
+legend("topleft", c("Rabbit", "Red fox"), col = c(col_oryctolagus, col_vulpes), lty = 1, 
+       box.col = "transparent", bg = "transparent", cex = 1.3)
+
+
+# Meles meles and Oryctolagus cuniculus
+draw_plot_oryctolagus(centre = "night",
+                      add = FALSE)
+draw_plot_meles(centre = "night",
+                 add = TRUE)
+draw_night_xaxis()
+draw_night_polygons()
+legend("topleft", c("Rabbit", "badger"), col = c(col_oryctolagus, col_meles), lty = 1, 
+       box.col = "transparent", bg = "transparent", cex = 1.3)
+
+
+# Genetta genetta and Oryctolagus cuniculus
+draw_plot_oryctolagus(centre = "night",
+                      add = FALSE)
+draw_plot_genetta(centre = "night",
+                  add = TRUE)
+draw_night_xaxis()
+draw_night_polygons()
+legend("topleft", c("Rabbit", "Genet"), col = c(col_oryctolagus, col_genetta), lty = 1, 
+       box.col = "transparent", bg = "transparent", cex = 1.3)
+
+# Lynx pardinus and Oryctolagus cuniculus
+draw_plot_oryctolagus(centre = "night",
+                      add = FALSE)
+draw_plot_lynx(centre = "night",
+                  add = TRUE)
+draw_night_xaxis()
+draw_night_polygons()
+legend("topleft", c("Rabbit", "Lynx"), col = c(col_oryctolagus, col_lynx), lty = 1, 
+       box.col = "transparent", bg = "transparent", cex = 1.3)
+
+# Herpestes ichneumon and Oryctolagus cuniculus
+draw_plot_oryctolagus(centre = "day",
+                      add = FALSE)
+draw_plot_herpestes(centre = "day",
+               add = TRUE)
+draw_day_xaxis()
+draw_day_polygons()
+legend("top", c("Rabbit", "Mongoose"), col = c(col_oryctolagus, col_herpestes), lty = 1, 
+       box.col = "transparent", bg = "transparent", cex = 1.3)
+
+layout(1)
+
+dev.off()
+
+##########################################################################
+##                                                                      ##
+##   Overlapping coefficients and bootstrap confidence intervals        ##
+##                                                                      ##
+##########################################################################
+
+# First check the detections of each species in order to select the appropriate coefficient. For species
+# with < 50 detections we will use Dhat1 and species with > 50 detections we will use Dhat4
+
+# Vulpes vulpes vs Meles meles
+min(length(solar_time[["Vulpes vulpes"]]), length(solar_time[["Meles meles"]])) # check the minimun sample size of detections
+overlapEst(solar_time[["Vulpes vulpes"]], solar_time[["Meles meles"]]) # Overlapping coefficient Dht4
+boost_vul_mel <- bootstrap(solar_time[["Vulpes vulpes"]], solar_time[["Meles meles"]], 99,
+          smooth = TRUE, type = "Dhat4") # WARNING 10000 boostrap sample will be generated
+min(boost_vul_mel)
+max(boost_vul_mel)
+wald_test_vm <- watson.wheeler.test(list(solar_time[["Vulpes vulpes"]], solar_time[["Meles meles"]]))
+print(wald_test_vm)
+
+# Vulpes vulpes vs Genetta genetta
+min(length(solar_time[["Vulpes vulpes"]]), length(solar_time[["Genetta genetta"]])) # check the minimun sample size of detections
+overlapEst(solar_time[["Vulpes vulpes"]], solar_time[["Genetta genetta"]]) # Overlapping coefficient Dht4
+boost_vul_gen <- bootstrap(solar_time[["Vulpes vulpes"]], solar_time[["Genetta genetta"]], 999,
+                   smooth = TRUE, type = "Dhat4") # WARNING 10000 boostrap sample will be generated
+min(boost_vul_gen)
+max(boost_vul_gen)
+wald_test_vg <- watson.wheeler.test(list(solar_time[["Vulpes vulpes"]], solar_time[["Genetta genetta"]]))
+print(wald_test_vg)
+
+# Genetta genetta vs Meles meles
+min(length(solar_time[["Genetta genetta"]]), length(solar_time[["Meles meles"]])) # check the minimun sample size of detections
+overlapEst(solar_time[["Genetta genetta"]], solar_time[["Meles meles"]]) # Overlapping coefficient Dht4
+boost_gen_mel <- bootstrap(solar_time[["Genetta genetta"]], solar_time[["Meles meles"]], 999,
+                           smooth = TRUE, type = "Dhat4") # WARNING 10000 boostrap sample will be generated
+min(boost_gen_mel)
+max(boost_gen_mel)
+wald_test_gm <- watson.wheeler.test(list(solar_time[["Genetta genetta"]], solar_time[["Meles meles"]]))
+print(wald_test_gm)
+
+# Vulpes vulpes vs Herpestes ichneumon
+min(length(solar_time[["Vulpes vulpes"]]), length(solar_time[["Herpestes ichneumon"]])) # check the minimun sample size of detections
+overlapEst(solar_time[["Vulpes vulpes"]], solar_time[["Herpestes ichneumon"]]) # Overlapping coefficient Dht4
+boost_vul_her <- bootstrap(solar_time[["Vulpes vulpes"]], solar_time[["Herpestes ichneumon"]], 999,
+                           smooth = TRUE, type = "Dhat4") # WARNING 10000 boostrap sample will be generated
+min(boost_vul_her)
+max(boost_vul_her)
+wald_test_vh <- watson.wheeler.test(list(solar_time[["Vulpes vulpes"]], solar_time[["Herpestes ichneumon"]]))
+print(wald_test_vh)
+
+# Herpestes ichneumon vs Meles meles
+min(length(solar_time[["Herpestes ichneumon"]]), length(solar_time[["Meles meles"]])) # check the minimun sample size of detections
+overlapEst(solar_time[["Herpestes ichneumon"]], solar_time[["Meles meles"]]) # Overlapping coefficient Dht4
+boost_her_mel <- bootstrap(solar_time[["Herpestes ichneumon"]], solar_time[["Meles meles"]], 999,
+                           smooth = TRUE, type = "Dhat4") # WARNING 10000 boostrap sample will be generated
+min(boost_her_mel)
+max(boost_her_mel)
+wald_test_hm <- watson.wheeler.test(list(solar_time[["Herpestes ichneumon"]], solar_time[["Meles meles"]]))
+print(wald_test_hm)
+
+# Herpestes ichneumon vs Genetta genetta
+min(length(solar_time[["Herpestes ichneumon"]]), length(solar_time[["Genetta genetta"]])) # check the minimun sample size of detections
+overlapEst(solar_time[["Herpestes ichneumon"]], solar_time[["Genetta genetta"]]) # Overlapping coefficient Dht4
+boost_her_gen <- bootstrap(solar_time[["Herpestes ichneumon"]], solar_time[["Genetta genetta"]], 999,
+                           smooth = TRUE, type = "Dhat4") # WARNING 10000 boostrap sample will be generated
+min(boost_her_gen)
+max(boost_her_gen)
+wald_test_hg <- watson.wheeler.test(list(solar_time[["Herpestes ichneumon"]], solar_time[["Genetta genetta"]]))
+print(wald_test_hg)
+
+# Lynx pardinus vs Vulpes vulpes
+min(length(solar_time[["Vulpes vulpes"]]), length(solar_time[["Lynx pardinus"]])) # check the minimun sample size of detections
+overlapEst(solar_time[["Vulpes vulpes"]], solar_time[["Lynx pardinus"]]) # Overlapping coefficient Dht1
+boost_lyn_her <- bootstrap(solar_time[["Vulpes vulpes"]], solar_time[["Lynx pardinus"]], 999,
+                           smooth = TRUE, type = "Dhat1") # WARNING 10000 boostrap sample will be generated
+min(boost_lyn_vul)
+max(boost_lyn_vul)
+wald_test_lv <- watson.wheeler.test(list(solar_time[["Vulpes vulpes"]], solar_time[["Lynx pardinus"]]))
+print(wald_test_lv)
+
+# Lynx pardinus vs Meles meles
+min(length(solar_time[["Lynx pardinus"]]), length(solar_time[["Meles meles"]])) # check the minimun sample size of detections
+overlapEst(solar_time[["Lynx pardinus"]], solar_time[["Meles meles"]]) # Overlapping coefficient Dht1
+boost_lyn_mel <- bootstrap(solar_time[["Lynx pardinus"]], solar_time[["Meles meles"]], 999,
+                           smooth = TRUE, type = "Dhat1") # WARNING 10000 boostrap sample will be generated
+min(boost_lyn_mel)
+max(boost_lyn_mel)
+wald_test_lm <- watson.wheeler.test(list(solar_time[["Lynx pardinus"]], solar_time[["Meles meles"]]))
+print(wald_test_lm)
+
+# Lynx pardinus vs Genetta genetta
+min(length(solar_time[["Lynx pardinus"]]), length(solar_time[["Genetta genetta"]])) # check the minimun sample size of detections
+overlapEst(solar_time[["Lynx pardinus"]], solar_time[["Genetta genetta"]]) # Overlapping coefficient Dht1
+boost_lyn_gen <- bootstrap(solar_time[["Lynx pardinus"]], solar_time[["Genetta genetta"]], 999,
+                           smooth = TRUE, type = "Dhat1") # WARNING 10000 boostrap sample will be generated
+min(boost_lyn_gen)
+max(boost_lyn_gen)
+wald_test_lg <- watson.wheeler.test(list(solar_time[["Lynx pardinus"]], solar_time[["Genetta genetta"]]))
+print(wald_test_lg)
+
+# Lynx pardinus vs Herpestes ichneumon
+min(length(solar_time[["Lynx pardinus"]]), length(solar_time[["Herpestes ichneumon"]])) # check the minimun sample size of detections
+overlapEst(solar_time[["Lynx pardinus"]], solar_time[["Herpestes ichneumon"]]) # Overlapping coefficient Dht1
+boost_lyn_her <- bootstrap(solar_time[["Lynx pardinus"]], solar_time[["Herpestes ichneumon"]], 999,
+                           smooth = TRUE, type = "Dhat1") # WARNING 10000 boostrap sample will be generated
+min(boost_lyn_her)
+max(boost_lyn_her)
+wald_test_lh <- watson.wheeler.test(list(solar_time[["Lynx pardinus"]], solar_time[["Herpestes ichneumon"]]))
+print(wald_test_lh)
+
+# Lepus granatensis vs Vulpes vulpes
+min(length(solar_time[["Lepus granatensis"]]), length(solar_time[["Vulpes vulpes"]])) # check the minimun sample size of detections
+overlapEst(solar_time[["Lepus granatensis"]], solar_time[["Vulpes vulpes"]]) # Overlapping coefficient Dht4
+boost_lep_vul <- bootstrap(solar_time[["Lepus granatensis"]], solar_time[["Vulpes vulpes"]], 999,
+                           smooth = TRUE, type = "Dhat4") # WARNING 10000 boostrap sample will be generated
+min(boost_lep_vul)
+max(boost_lep_vul)
+wald_test_lepv <- watson.wheeler.test(list(solar_time[["Lepus granatensis"]], solar_time[["Vulpes vulpes"]]))
+print(wald_test_lepv)
+
+# Lepus granatensis vs Meles meles
+min(length(solar_time[["Lepus granatensis"]]), length(solar_time[["Meles meles"]])) # check the minimun sample size of detections
+overlapEst(solar_time[["Lepus granatensis"]], solar_time[["Meles meles"]]) # Overlapping coefficient Dht4
+boost_lep_mel <- bootstrap(solar_time[["Lepus granatensis"]], solar_time[["Meles meles"]], 999,
+                           smooth = TRUE, type = "Dhat4") # WARNING 10000 boostrap sample will be generated
+min(boost_lep_mel)
+max(boost_lep_mel)
+wald_test_lepmel <- watson.wheeler.test(list(solar_time[["Lepus granatensis"]], solar_time[["Meles meles"]]))
+print(wald_test_lepmel)
+
+# Lepus granatensis vs Genetta genetta
+min(length(solar_time[["Lepus granatensis"]]), length(solar_time[["Genetta genetta"]])) # check the minimun sample size of detections
+overlapEst(solar_time[["Lepus granatensis"]], solar_time[["Genetta genetta"]]) # Overlapping coefficient Dht4
+boost_lep_gen <- bootstrap(solar_time[["Lepus granatensis"]], solar_time[["Genetta genetta"]], 999,
+                           smooth = TRUE, type = "Dhat4") # WARNING 10000 boostrap sample will be generated
+min(boost_lep_gen)
+max(boost_lep_gen)
+wald_test_lepgen <- watson.wheeler.test(list(solar_time[["Lepus granatensis"]], solar_time[["Genetta genetta"]]))
+print(wald_test_lepgen)
+
+# Lepus granatensis vs Herpestes ichneumon
+min(length(solar_time[["Lepus granatensis"]]), length(solar_time[["Herpestes ichneumon"]])) # check the minimun sample size of detections
+overlapEst(solar_time[["Lepus granatensis"]], solar_time[["Herpestes ichneumon"]]) # Overlapping coefficient Dht4
+boost_lep_gen <- bootstrap(solar_time[["Lepus granatensis"]], solar_time[["Herpestes ichneumon"]], 999,
+                           smooth = TRUE, type = "Dhat4") # WARNING 10000 boostrap sample will be generated
+min(boost_lep_gen)
+max(boost_lep_gen)
+wald_test_melgen <- watson.wheeler.test(list(solar_time[["Lepus granatensis"]], solar_time[["Herpestes ichneumon"]]))
+print(wald_test_lepher)
+
+# Lepus granatensis vs Lynx pardinus
+min(length(solar_time[["Lepus granatensis"]]), length(solar_time[["Lynx pardinus"]])) # check the minimun sample size of detections
+overlapEst(solar_time[["Lepus granatensis"]], solar_time[["Lynx pardinus"]]) # Overlapping coefficient Dht1
+boost_lep_lyn <- bootstrap(solar_time[["Lepus granatensis"]], solar_time[["Lynx pardinus"]], 999,
+                           smooth = TRUE, type = "Dhat1") # WARNING 10000 boostrap sample will be generated
+min(boost_lep_lyn)
+max(boost_lep_lyn)
+wald_test_leplyn <- watson.wheeler.test(list(solar_time[["Lepus granatensis"]], solar_time[["Lynx pardinus"]]))
+print(wald_test_leplyn)
+
+# Oryctolagus cuniculus vs Vulpes vulpes
+min(length(solar_time[["Oryctolagus cuniculus"]]), length(solar_time[["Vulpes vulpes"]])) # check the minimun sample size of detections
+overlapEst(solar_time[["Oryctolagus cuniculus"]], solar_time[["Vulpes vulpes"]]) # Overlapping coefficient Dht4
+boost_ory_vul <- bootstrap(solar_time[["Oryctolagus cuniculus"]], solar_time[["Vulpes vulpes"]], 999,
+                           smooth = TRUE, type = "Dhat4") # WARNING 10000 boostrap sample will be generated
+min(boost_ory_vul)
+max(boost_ory_vul)
+wald_test_oryvul <- watson.wheeler.test(list(solar_time[["Oryctolagus cuniculus"]], solar_time[["Vulpes vulpes"]]))
+print(wald_test_oryvul)
+
+# Oryctolagus cuniculus vs Meles meles
+min(length(solar_time[["Oryctolagus cuniculus"]]), length(solar_time[["Meles meles"]])) # check the minimun sample size of detections
+overlapEst(solar_time[["Oryctolagus cuniculus"]], solar_time[["Meles meles"]]) # Overlapping coefficient Dht4
+boost_ory_mel <- bootstrap(solar_time[["Oryctolagus cuniculus"]], solar_time[["Meles meles"]], 999,
+                           smooth = TRUE, type = "Dhat4") # WARNING 10000 boostrap sample will be generated
+min(boost_ory_mel)
+max(boost_ory_mel)
+wald_test_orymel <- watson.wheeler.test(list(solar_time[["Oryctolagus cuniculus"]], solar_time[["Meles meles"]]))
+print(wald_test_orymel)
+
+# Oryctolagus cuniculus vs Genetta genetta
+min(length(solar_time[["Oryctolagus cuniculus"]]), length(solar_time[["Genetta genetta"]])) # check the minimun sample size of detections
+overlapEst(solar_time[["Oryctolagus cuniculus"]], solar_time[["Genetta genetta"]]) # Overlapping coefficient Dht4
+boost_ory_gen <- bootstrap(solar_time[["Oryctolagus cuniculus"]], solar_time[["Genetta genetta"]], 999,
+                           smooth = TRUE, type = "Dhat4") # WARNING 10000 boostrap sample will be generated
+min(boost_ory_gen)
+max(boost_ory_gen)
+wald_test_orygen <- watson.wheeler.test(list(solar_time[["Oryctolagus cuniculus"]], solar_time[["Genetta genetta"]]))
+print(wald_test_orygen)
+
+# Oryctolagus cuniculus vs Herpestes ichneumon
+min(length(solar_time[["Oryctolagus cuniculus"]]), length(solar_time[["Herpestes ichneumon"]])) # check the minimun sample size of detections
+overlapEst(solar_time[["Oryctolagus cuniculus"]], solar_time[["Herpestes ichneumon"]]) # Overlapping coefficient Dht4
+boost_ory_her <- bootstrap(solar_time[["Oryctolagus cuniculus"]], solar_time[["Herpestes ichneumon"]], 999,
+                           smooth = TRUE, type = "Dhat4") # WARNING 10000 boostrap sample will be generated
+min(boost_ory_her)
+max(boost_ory_her)
+wald_test_oryher <- watson.wheeler.test(list(solar_time[["Oryctolagus cuniculus"]], solar_time[["Herpestes ichneumon"]]))
+print(wald_test_oryher)
+
+# Oryctolagus cuniculus vs Lynx pardinus
+min(length(solar_time[["Oryctolagus cuniculus"]]), length(solar_time[["Lynx pardinus"]])) # check the minimun sample size of detections
+overlapEst(solar_time[["Oryctolagus cuniculus"]], solar_time[["Lynx pardinus"]]) # Overlapping coefficient Dht4
+boost_ory_lyn <- bootstrap(solar_time[["Oryctolagus cuniculus"]], solar_time[["Lynx pardinus"]], 999,
+                           smooth = TRUE, type = "Dhat1") # WARNING 10000 boostrap sample will be generated
+min(boost_ory_lyn)
+max(boost_ory_lyn)
+wald_test_orylyn <- watson.wheeler.test(list(solar_time[["Oryctolagus cuniculus"]], solar_time[["Lynx pardinus"]]))
+print(wald_test_orylyn)
+
+# Oryctolagus cuniculus vs Lepus granatensis
+min(length(solar_time[["Oryctolagus cuniculus"]]), length(solar_time[["Lepus granatensis"]])) # check the minimun sample size of detections
+overlapEst(solar_time[["Oryctolagus cuniculus"]], solar_time[["Lepus granatensis"]]) # Overlapping coefficient Dht4
+boost_ory_lep <- bootstrap(solar_time[["Oryctolagus cuniculus"]], solar_time[["Lepus granatensis"]], 999,
+                           smooth = TRUE, type = "Dhat4") # WARNING 10000 boostrap sample will be generated
+min(boost_ory_lep)
+max(boost_ory_lep)
+wald_test_orylep <- watson.wheeler.test(list(solar_time[["Oryctolagus cuniculus"]], solar_time[["Lynx pardinus"]]))
+print(wald_test_orylep)
+
+
+
+
+
+
+compareCkern(fit_genetta_s, fit_meles_s)
+compareAct(list(fit_vulpes_s, fit_meles_s))
+
+
+
+overlapPlot(solar_time[["Vulpes vulpes"]], solar_time[["Meles meles"]], 
+            xcenter = "midnight" ,rug =T,linecol = c("#F0E68C", "#4682B4"), ylim= c(0.00, 0.13),
+            linewidth = c(1, 1), linetype = c(1,1), olapcol = "#FFFFE0", main="Egyptian mongoose vs Red fox")
+
+overlapPlot(slot(fit_meles_s, "data"), slot(fit_vulpes_s, "data"), 
+            xcenter = "midnight" ,rug =T,linecol = c("#F0E68C", "#4682B4"), ylim= c(0.00, 0.13),
+            linewidth = c(1, 1), linetype = c(1,1), olapcol = "#FFFFE0", main="Egyptian mongoose vs Red fox")
+
+slot(fit_vulpes_s, "data")
+
