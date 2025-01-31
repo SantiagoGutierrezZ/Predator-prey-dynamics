@@ -80,6 +80,10 @@ pdf_lepus <- densityFit(lepus_solar$solar, t , bw_lepus)
 ### --- Real data ###
 #####################
 
+# current_loc <- "10B"
+# spA <- "Herpestes ichneumon"
+# spB <- "Lepus granatensis"
+
 # Define a function to obtain real data
 get_real_data <- function(spA, spB) {
   
@@ -180,7 +184,7 @@ get_real_data <- function(spA, spB) {
           )
         ) %>%
         # Filter to keep species detections and inactivity periods
-        filter(spA == 1 | spB == 1 | is.na(spA) | is.na(spB)) %>%
+        filter(sp_A == 1 | sp_B == 1 | is.na(sp_A) | is.na(sp_B)) %>%
         # Define interval types. If a species detection is followed by an inactive 
         # period, it is NA. Also, colaculate 'time_diff', which stores the time 
         # difference between detections of different species.
@@ -208,17 +212,35 @@ get_real_data <- function(spA, spB) {
 
 # Run function to get the real data for Rabbit vs Predators 
 data_vul_ory <- get_real_data(spA = vulpes, spB = oryctolagus)
+data_vul_ory <- Filter(function(x) nrow(x[[1]]) > 0, data_vul_ory)
+
 data_mel_ory <- get_real_data(spA = meles, spB = oryctolagus)
+data_mel_ory <- Filter(function(x) nrow(x[[1]]) > 0, data_mel_ory)
+
 data_gen_ory <- get_real_data(spA = genetta, spB = oryctolagus)
+data_gen_ory <- Filter(function(x) nrow(x[[1]]) > 0, data_gen_ory)
+
 data_her_ory <- get_real_data(spA = herpestes, spB = oryctolagus)
+data_her_ory <- Filter(function(x) nrow(x[[1]]) > 0, data_her_ory)
+
 data_lyn_ory <- get_real_data(spA = lynx, spB = oryctolagus)
+data_lyn_ory <- Filter(function(x) nrow(x[[1]]) > 0, data_lyn_ory)
 
 # Run function to get the real data for Hare vs Predators
 data_vul_lep <- get_real_data(spA = vulpes, spB = lepus)
+data_vul_lep <- Filter(function(x) nrow(x[[1]]) > 0, data_vul_lep)
+
 data_mel_lep <- get_real_data(spA = meles, spB = lepus)
+data_mel_lep <- Filter(function(x) nrow(x[[1]]) > 0, data_mel_lep)
+
 data_gen_lep <- get_real_data(spA = genetta, spB = lepus)
+data_gen_lep <- Filter(function(x) nrow(x[[1]]) > 0, data_gen_lep)
+
 data_her_lep <- get_real_data(spA = herpestes, spB = lepus)
+data_her_lep <- Filter(function(x) nrow(x[[1]]) > 0, data_her_lep)
+
 data_lyn_lep <- get_real_data(spA = lynx, spB = lepus)
+data_lyn_lep <- Filter(function(x) nrow(x[[1]]) > 0, data_lyn_lep)
 
 # In the previous function, we did not account for the time between detections when the camera was not operational.
 # As a result, some locations lack time intervals. To address this, we will include the median time to encounter,
@@ -310,165 +332,13 @@ data_gen_lep <- include_times(data_gen_lep, spA = genetta, spB = lepus)
 data_her_lep <- include_times(data_her_lep, spA = herpestes, spB = lepus)
 data_lyn_lep <- include_times(data_lyn_lep, spA = lynx, spB = lepus)
 
-
 ######################
 ### --- Simulation ###
 ######################
 n.rep <- 100
 
-# Define function for get the simulated data
-create_simulation <- function(pdfA, pdfB, rep, spA, spB) {
-  
-  data_list <- list()
-  
-  # Realizamos el mismo proceso que con los datos reales para obtener la tabla de 
-  # actividad de cada sitio para simular el mismo proceso y descartar las detecciones
-  # que se vean interrumpidas por un periodo de inactividad.
-  
-  detections <- all_data %>%
-    # Agrupar por sitio
-    group_by(site) %>%
-    # Contar la presencia de cada especie en cada sitio
-    summarise(
-      spA_present = any(sp == spA),
-      spB_present = any(sp == spB),
-      .groups = "drop"
-    ) %>%
-    # Filtrar los sitios donde ambas especies están presentes
-    filter(spA_present & spB_present)
-  
-  # Definir el sitio que se va a analizar
-  loc <- as.vector(detections$site)
-  
-  for (current_loc in loc) {
-    
-    # Filtramos por sitio y excluimos las columnas que no tienen datos
-    operation_tb_filtered <- operation_tb %>%
-      filter(station == current_loc) %>%
-      select_if(~ any(!is.na(.) & . != "")) %>%
-      mutate(across(2:ncol(.), ~ as.POSIXct(., format = "%d/%m/%Y %H:%M")))
-    
-    # Creamos una secuencia por minuto desde la setup date hasta la retrival date
-    # de ese sitio
-    loc_activity <- seq(from = operation_tb_filtered$setup_date[1], to = operation_tb_filtered$retrieval_date[1], by = "min")
-    
-    # Creamos la tabla donde almacenaremos la operatividad de los sitios. Asumimos
-    # que el sitio estuvo activo en todos los minutos.
-    activity_tb <- data.frame(
-      datetime = loc_activity,
-      activity = 1,
-      time = format(loc_activity, "%H:%M")
-    )
-    
-    # Extraemos las fechas de inicio de los periodos de inactividad
-    problem_from <- operation_tb_filtered[grep("^problem.*_from", names(operation_tb_filtered))]
-    # Extraemos las fechas de fin de los periodos de inactividad
-    problem_to <- operation_tb_filtered[grep("^problem.*_to", names(operation_tb_filtered))]
-    
-    # Si no hay problemas, el sitio estuvo activo todo el período
-    if (length(problem_from) == 0 || length(problem_to) == 0) {
-      activity_tb$activity <- 1  # Todos los minutos están activos
-    } else {
-      # Crear una matriz lógica para marcar inactividad
-      inactive_matrix <- matrix(FALSE, nrow = length(loc_activity), ncol = length(problem_from))
-      
-      # Llenar la matriz de inactividad con TRUE en los periodos correspondientes.
-      # Comparamos cada minuto del periodo de estudio del sitio (loc_activity) con
-      # los problemas del sitio.
-      for (i in 1:length(problem_from)) {
-        inactive_matrix[, i] <- loc_activity >= problem_from[[i]] & loc_activity <= problem_to[[i]]
-      }
-      
-      # Actualizar la columna 'activity'. Como usamos valores lógicos en la iteración
-      # anterior, si una fila es mayor a 1 (TRUE) significa inactividad (0), si no lo
-      # es significa activa (1)
-      activity_tb$activity <- ifelse(rowSums(inactive_matrix) > 0, 0, 1)
-    }
-    
-    
-    # Acá estoy obtenido la probabilidad de detección de cada especie en cada sitio
-    # a partir del número de detecciónes dividido por el número de días en los que
-    # el sitio estuvo activo. Luego escalo la esa probabilidad usando su patron de
-    # actividad con el fin de obtener la probabilidad de la especie para cada minuto del
-    # día.
-    
-    # Days of activity of the site
-    days <- nrow(activity_tb[activity_tb$activity == 1, ]) / 1440
-    # Detection probability of the spA
-    p.spA <- as.numeric(nrow(all_data[all_data$sp == spA & all_data$site == current_loc, ]) / days)
-    # Detection probability of the spB
-    p.spB <- as.numeric(nrow(all_data[all_data$sp == spB & all_data$site == current_loc, ]) / days)
-    # Detectionn probability of the spA scaled using its activity pattern
-    p_spA_scaled <- pdfA * (p.spA / sum(pdfA))
-    # Detection probability of the spB scaled using its activity pattern
-    p_spB_scaled <- pdfB * (p.spB / sum(pdfB))
-    
-    p.species <- data.table(time = format(seq(from = as.POSIXct("00:00", format = "%H:%M"), 
-                                              to = as.POSIXct("23:59", format = "%H:%M"), 
-                                              by = "1 min"), "%H:%M"),
-                            p.time_spA = p_spA_scaled,
-                            p.time_spB = p_spB_scaled
-    )
-    
-    
-    # # En simulation_tb tengo las siguientes columnas:
-    # # - datetime: secuencia de tiempo por minuto del sitio X durante el periodo de estudio.
-    # # - activity: indica si la cámara estuvo activa en un minuto dado.
-    # # - p.time_spA: probabilidad de detección del depredador en cada minuto del día.
-    # # - p.time_spB: probabilidad de detección de la presa en cada minuto del día.
-    # 
-    listino <- vector("list", rep) # Lista para almacenar las simulaciones.
-    
-    for (i in 1:rep) {
-
-      tabla <- simulation_tb %>%
-        # Ordeno por fecha y hora
-        arrange(datetime) %>%
-        mutate(
-          # Creo dos nuevas columnas en las que simulo la presencia de la especie A y B
-          # unicamente en los minutos que la cámara estuvo activa. El n() en rbinom 
-          # indica el tamaño del dataset.
-          spA = ifelse(activity == 1, rbinom(n = n(), size = 1, prob = p.time_spA), NA) ,
-          spB = ifelse(activity == 1, rbinom(n = n(), size = 1, prob = p.time_spB), NA),
-        ) %>%
-        # Retengo las filas unicamente con presencia de especies y los NA, ya que 
-        # indican inactividad de la cámara
-        filter(spA == 1 | spB == 1 | is.na(spA) | is.na(spB)) %>%
-        mutate(
-          # Acá creo los intervalos.
-          interval = case_when(
-            spA == 1 & lead(spB) == 1 ~ "AB", # Especie A seguida por especie B.
-            spB == 1 & lead(spA) == 1 ~ "BA", # Especie B seguida por especie A.
-            # Si las dos especies están presentes en el mismo minuto. 
-            spA == 1 & spB == 1 ~ "ERROR", # Ambas especies detectadas en el mismo minuto
-            # Descartar intervalos BB, AA o evitar calcular intervalos cuando cualquiera de
-            # las especies están presentes y luego hay un periodo de inactividad. El NA_character_
-            # es necesario por ...
-            TRUE ~ NA_character_ # Descartar intervalos AA, BB e intervalos AB o BA que no 
-            # puedo usar por inactividad de la cámara
-          ),
-          # Calculo la diferencia de tiempo entre detecciones consecutivas.
-          time_diff = as.numeric(abs(difftime(datetime, lead(datetime), units = "mins")))
-        ) %>%
-        # Descarto los intervalos que no me interesan
-        filter(!is.na(interval))
-      
-      # Me aseguré que el código estuviera usando correctamente las probabilidades de cada minuto. 
-      # Lo comprobé visualizando del patrón de actividad con las detecciones simuladas. 
-      # También comprobé que el número de detecciones simuladas para cada especie 
-      # sea coherente con las detecciones reales.
-      
-      listino[[i]] <- tabla
-    }
-    
-    data_list[[current_loc]] <- listino
-  }
-  
-  return(data_list)  
-}
-
 # Define function to generate the simulated data
-create_simulation <- function(pdfA, pdfB, rep, spA, spB) {
+create_simulation <- function(pdfA, pdfB, rep, spA, spB, real_data) {
   
   data_list <- list()
   
@@ -476,20 +346,22 @@ create_simulation <- function(pdfA, pdfB, rep, spA, spB) {
   # for each site, simulating the same conditions and discarding intervals  
   # that are interrupted due to inactivity periods.
   
-  detections <- all_data %>%
-    # Group by site
-    group_by(site) %>%
-    # Count the presence of each species at each site
-    summarise(
-      spA_present = any(sp == spA),
-      spB_present = any(sp == spB),
-      .groups = "drop"
-    ) %>%
-    # Filter sites where both species are present
-    filter(spA_present & spB_present)
+  # detections <- all_data %>%
+  #   # Group by site
+  #   group_by(site) %>%
+  #   # Count the presence of each species at each site
+  #   summarise(
+  #     spA_present = any(sp == spA),
+  #     spB_present = any(sp == spB),
+  #     .groups = "drop"
+  #   ) %>%
+  #   # Filter sites where both species are present
+  #   filter(spA_present & spB_present)
+  # 
+  # # Define the site to be analyzed
+  # loc <- as.vector(detections$site)
   
-  # Define the site to be analyzed
-  loc <- as.vector(detections$site)
+  loc <- names(real_data)
   
   for (current_loc in loc) {
     
@@ -612,30 +484,30 @@ create_simulation <- function(pdfA, pdfB, rep, spA, spB) {
   return(data_list)  
 }
 
-
 # Run the simulation Rabbit vs Predators
 sim_vul_ory <- create_simulation(spA = vulpes, spB = oryctolagus, pdfA = pdf_vulpes,
-                                 pdfB = pdf_oryctolagus, rep = n.rep)
+                                 pdfB = pdf_oryctolagus, rep = n.rep, real_data = data_vul_ory)
 sim_mel_ory <- create_simulation(spA = meles, spB = oryctolagus, pdfA = pdf_meles,
-                                 pdfB = pdf_oryctolagus, rep = n.rep)
+                                 pdfB = pdf_oryctolagus, rep = n.rep, real_data = data_mel_ory)
 sim_gen_ory <- create_simulation(spA = genetta, spB = oryctolagus, pdfA = pdf_genetta,
-                                 pdfB = pdf_oryctolagus, rep = n.rep)
+                                 pdfB = pdf_oryctolagus, rep = n.rep, real_data = data_gen_ory)
 sim_her_ory <- create_simulation(spA = herpestes, spB = oryctolagus, pdfA = pdf_herpestes,
-                                 pdfB = pdf_oryctolagus, rep = n.rep)
+                                 pdfB = pdf_oryctolagus, rep = n.rep, real_data = data_her_ory)
 sim_lyn_ory <- create_simulation(spA = lynx, spB = oryctolagus, pdfA = pdf_lynx,
-                                 pdfB = pdf_oryctolagus, rep = n.rep)
+                                 pdfB = pdf_oryctolagus, rep = n.rep, real_data = data_lyn_ory)
 
 # Run the simulation Hare vs Predators
 sim_vul_lep <- create_simulation(spA = vulpes, spB = lepus, pdfA = pdf_vulpes,
-                                 pdfB = pdf_lepus, rep = n.rep)
+                                 pdfB = pdf_lepus, rep = n.rep, real_data = data_vul_lep)
 sim_mel_lep <- create_simulation(spA = meles, spB = lepus, pdfA = pdf_meles,
-                                 pdfB = pdf_lepus, rep = n.rep)
+                                 pdfB = pdf_lepus, rep = n.rep, real_data = data_mel_lep)
 sim_gen_lep <- create_simulation(spA = genetta, spB = lepus, pdfA = pdf_genetta,
-                                 pdfB = pdf_lepus, rep = n.rep)
+                                 pdfB = pdf_lepus, rep = n.rep, real_data = data_gen_lep)
 sim_her_lep <- create_simulation(spA = herpestes, spB = lepus, pdfA = pdf_herpestes,
-                                 pdfB = pdf_lepus, rep = n.rep)
+                                 pdfB = pdf_lepus, rep = n.rep, real_data = data_her_lep)
 sim_lyn_lep <- create_simulation(spA = lynx, spB = lepus, pdfA = pdf_lynx,
-                                 pdfB = pdf_lepus, rep = n.rep)
+                                 pdfB = pdf_lepus, rep = n.rep, real_data = data_lyn_lep)
+
 
 ###################
 ### Comparison ####
@@ -746,60 +618,6 @@ s_lyn_lep_BA <- data_matrix(sim_lyn_lep, "BA")
 
 ###############################################
 
-# Crear una función para comparar los datos reales con los datos simulados. Acá
-# estamos teniendo en cuenta las siguientes posibilidades que se pueden dar
-# (tomamos como ejemplo AB):
-
-# Reales | Simulados
-# AB     | AB        <- Lo que de el resultado
-# AB     | NA        <- Simulados > Reales
-# NA     | AB        <- Reales > Simulados
-# NA     | NA        <- NA 
-
-comparison <- function(real_data, simulated_data, specie, t_interval) {
-  
-  comparison_matrix <- matrix(FALSE, nrow = nrow(real_data), ncol = n.rep)
-  
-  rownames(comparison_matrix) <- rownames(real_data)
-  
-  for (i in 1:nrow(real_data)) {
-    comparison_matrix[i, ] <- ifelse(
-      is.na(real_data[i, ]) & is.na(simulated_data[i, ]), NA,
-      ifelse(
-        !is.na(real_data[i, ]) & is.na(simulated_data[i, ]), FALSE,
-        ifelse(
-          is.na(real_data[i, ]) & !is.na(simulated_data[i, ]), TRUE,
-          ifelse(
-            !is.na(real_data[i, ]) & !is.na(simulated_data[i, ]),
-            real_data[i, ] >= simulated_data[i, ],
-            NA
-          )
-        )
-      )
-    )
-  }
-  
-# Calcular proporción de TRUE
-n_total <- sum(!is.na(comparison_matrix))
-# Exvluimos los NA de la comparación
-n_true <- sum(comparison_matrix, na.rm = TRUE)
-
-# Calcular intervalo de confianza y prueba de hipótesis
-ic_result <- prop.test(n_true, n_total)
-
-# Crear un dataframe inicial con los resultados
-results <- data.frame(
-  sp = specie,
-  interval = t_interval,
-  proportion = ic_result$estimate,
-  lower_CI = ic_result$conf.int[1],
-  upper_CI = ic_result$conf.int[2],
-  p_value = ic_result$p.value
-)
-
-return(results)
-
-}
 # Create a function to compare real data with simulated data.  
 # The function accounts for the following possible cases (using AB as an example):  
 #  
